@@ -7,7 +7,8 @@ contract RentalEscrow {
         Funded,
         Started,
         Completed,
-        Cancelled
+        Cancelled,
+        AdditionalFundingRequired
     }
 
     struct Booking {
@@ -17,6 +18,9 @@ contract RentalEscrow {
         uint256 depositAmount;
         uint256 startDate;
         uint256 endDate;
+        uint256 pendingAdditionalAmount;
+        uint256 fundedAdditionalAmount;
+        bool additionalFundingRequested;
         BookingStatus status;
     }
 
@@ -37,6 +41,8 @@ contract RentalEscrow {
     event BookingStarted(uint256 indexed bookingId);
     event BookingCompleted(uint256 indexed bookingId, uint256 amountReleased);
     event BookingCancelled(uint256 indexed bookingId, uint256 amountRefunded);
+    event AdditionalFundingRequested(uint256 indexed bookingId, address indexed landlord, uint256 amount);
+    event AdditionalFundingPaid(uint256 indexed bookingId, address indexed tenant, uint256 amount);
 
     modifier onlyLandlord(uint256 bookingId) {
         require(msg.sender == bookings[bookingId].landlord, "Only landlord can execute this action");
@@ -74,6 +80,9 @@ contract RentalEscrow {
             depositAmount: depositAmount,
             startDate: startDate,
             endDate: endDate,
+            pendingAdditionalAmount: 0,
+            fundedAdditionalAmount: 0,
+            additionalFundingRequested: false,
             status: BookingStatus.Created
         });
 
@@ -110,6 +119,47 @@ contract RentalEscrow {
         emit BookingFunded(bookingId, msg.sender, msg.value);
     }
 
+    function requestAdditionalFunding(uint256 bookingId, uint256 amount)
+        external
+        bookingExists(bookingId)
+        onlyLandlord(bookingId)
+    {
+        Booking storage booking = bookings[bookingId];
+
+        require(booking.status == BookingStatus.Funded, "Booking must be funded");
+        require(amount > 0, "Additional amount must be greater than zero");
+        require(!booking.additionalFundingRequested, "Additional funding already requested");
+
+        booking.pendingAdditionalAmount = amount;
+        booking.additionalFundingRequested = true;
+        booking.status = BookingStatus.AdditionalFundingRequired;
+
+        emit AdditionalFundingRequested(bookingId, msg.sender, amount);
+    }
+
+    function fundAdditionalAmount(uint256 bookingId)
+        external
+        payable
+        bookingExists(bookingId)
+        onlyTenant(bookingId)
+    {
+        Booking storage booking = bookings[bookingId];
+
+        require(
+            booking.status == BookingStatus.AdditionalFundingRequired,
+            "Additional funding is not required"
+        );
+        require(msg.value == booking.pendingAdditionalAmount, "Incorrect additional payment amount");
+
+        uint256 additionalAmount = booking.pendingAdditionalAmount;
+
+        booking.pendingAdditionalAmount = 0;
+        booking.fundedAdditionalAmount = additionalAmount;
+        booking.status = BookingStatus.Funded;
+
+        emit AdditionalFundingPaid(bookingId, msg.sender, msg.value);
+    }
+
     function startBooking(uint256 bookingId)
         external
         bookingExists(bookingId)
@@ -133,7 +183,7 @@ contract RentalEscrow {
 
         require(booking.status == BookingStatus.Started, "Booking must be started before completion");
 
-        uint256 amountToRelease = booking.rentalAmount + booking.depositAmount;
+        uint256 amountToRelease = booking.rentalAmount + booking.depositAmount + booking.fundedAdditionalAmount;
 
         booking.status = BookingStatus.Completed;
 
@@ -150,16 +200,22 @@ contract RentalEscrow {
         Booking storage booking = bookings[bookingId];
 
         require(
-            booking.status == BookingStatus.Created || booking.status == BookingStatus.Funded,
-            "Only created or funded bookings can be cancelled"
+            booking.status == BookingStatus.Created ||
+                booking.status == BookingStatus.Funded ||
+                booking.status == BookingStatus.AdditionalFundingRequired,
+            "Only created, funded or additional funding required bookings can be cancelled"
         );
 
         uint256 amountToRefund = 0;
 
-        if (booking.status == BookingStatus.Funded) {
-            amountToRefund = booking.rentalAmount + booking.depositAmount;
+        if (
+            booking.status == BookingStatus.Funded ||
+            booking.status == BookingStatus.AdditionalFundingRequired
+        ) {
+            amountToRefund = booking.rentalAmount + booking.depositAmount + booking.fundedAdditionalAmount;
         }
 
+        booking.pendingAdditionalAmount = 0;
         booking.status = BookingStatus.Cancelled;
 
         if (amountToRefund > 0) {
@@ -193,6 +249,25 @@ contract RentalEscrow {
             booking.startDate,
             booking.endDate,
             booking.status
+        );
+    }
+
+    function getAdditionalFunding(uint256 bookingId)
+        external
+        view
+        bookingExists(bookingId)
+        returns (
+            uint256 pendingAdditionalAmount,
+            uint256 fundedAdditionalAmount,
+            bool additionalFundingRequested
+        )
+    {
+        Booking memory booking = bookings[bookingId];
+
+        return (
+            booking.pendingAdditionalAmount,
+            booking.fundedAdditionalAmount,
+            booking.additionalFundingRequested
         );
     }
 }

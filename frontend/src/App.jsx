@@ -15,7 +15,28 @@ function App() {
   const [tenantAddress, setTenantAddress] = useState("");
   const [rentalAmount, setRentalAmount] = useState("1");
   const [depositAmount, setDepositAmount] = useState("0.5");
+  const [additionalAmount, setAdditionalAmount] = useState("0.25");
   const [message, setMessage] = useState("");
+  const [refreshMessage, setRefreshMessage] = useState("");
+
+  const normalizedAccount = account.toLowerCase();
+  const isLandlord =
+    booking && normalizedAccount === booking.landlord.toLowerCase();
+  const isTenant = booking && normalizedAccount === booking.tenant.toLowerCase();
+  const canFundBooking = booking && booking.statusNumber === 0 && isTenant;
+  const canRequestAdditionalFunding =
+    booking &&
+    booking.statusNumber === 1 &&
+    isLandlord &&
+    !booking.additionalFundingRequested;
+  const canFundAdditionalAmount =
+    booking && booking.statusNumber === 5 && isTenant;
+  const canStartBooking = booking && booking.statusNumber === 1 && isLandlord;
+  const canCompleteBooking = booking && booking.statusNumber === 2 && isLandlord;
+  const canCancelBooking =
+    booking &&
+    isTenant &&
+    [0, 1, 5].includes(booking.statusNumber);
 
   async function connectWallet() {
     try {
@@ -39,9 +60,55 @@ function App() {
       setAccount(accounts[0]);
       setContract(rentalContract);
       setMessage("Wallet conectada correctamente.");
+      setRefreshMessage("");
     } catch (error) {
       console.error(error);
       setMessage("Error al conectar MetaMask.");
+    }
+  }
+
+  function getTransactionHash(tx, receipt) {
+    return receipt?.hash || receipt?.transactionHash || tx.hash;
+  }
+
+  async function loadBooking() {
+    if (!contract) {
+      throw new Error("Contract is not connected");
+    }
+
+    const data = await contract.getBooking(bookingId);
+    const additionalFunding = await contract.getAdditionalFunding(bookingId);
+    const statusNumber = Number(data.status);
+
+    setBooking({
+      landlord: data.landlord,
+      tenant: data.tenant,
+      rentalAmount: ethers.formatEther(data.rentalAmount),
+      depositAmount: ethers.formatEther(data.depositAmount),
+      pendingAdditionalAmount: ethers.formatEther(
+        additionalFunding.pendingAdditionalAmount
+      ),
+      fundedAdditionalAmount: ethers.formatEther(
+        additionalFunding.fundedAdditionalAmount
+      ),
+      additionalFundingRequested:
+        additionalFunding.additionalFundingRequested,
+      startDate: new Date(Number(data.startDate) * 1000).toLocaleString(),
+      endDate: new Date(Number(data.endDate) * 1000).toLocaleString(),
+      status: BOOKING_STATUS[statusNumber],
+      statusNumber,
+    });
+  }
+
+  async function refreshBookingAfterTransaction() {
+    try {
+      await loadBooking();
+      setRefreshMessage("");
+    } catch (error) {
+      console.error(error);
+      setRefreshMessage(
+        "La transacción fue confirmada, pero no se pudo actualizar la información de la reserva. Usa Consultar para refrescarla."
+      );
     }
   }
 
@@ -69,9 +136,11 @@ function App() {
 
       setMessage("Creando reserva. Esperando confirmación...");
       const receipt = await tx.wait();
+      const txHash = getTransactionHash(tx, receipt);
 
       console.log(receipt);
-      setMessage(`Reserva creada. Hash: ${receipt.hash}`);
+      setMessage(`Reserva creada. Hash: ${txHash}`);
+      setRefreshMessage("");
     } catch (error) {
       console.error(error);
       setMessage("Error al crear la reserva. Revisa la consola.");
@@ -95,13 +164,71 @@ function App() {
 
       setMessage("Depositando fondos. Esperando confirmación...");
       const receipt = await tx.wait();
+      const txHash = getTransactionHash(tx, receipt);
 
       console.log(receipt);
-      setMessage(`Reserva financiada. Hash: ${receipt.hash}`);
-      await getBooking();
+      setMessage(`Reserva financiada. Hash: ${txHash}`);
+      setRefreshMessage("");
+      await refreshBookingAfterTransaction();
     } catch (error) {
       console.error(error);
       setMessage("Error al depositar fondos. Revisa rol, monto o estado.");
+    }
+  }
+
+  async function requestAdditionalFunding() {
+    try {
+      if (!contract) {
+        setMessage("Primero conecta tu wallet.");
+        return;
+      }
+
+      const additionalWei = ethers.parseEther(additionalAmount);
+      const tx = await contract.requestAdditionalFunding(
+        bookingId,
+        additionalWei
+      );
+
+      setMessage("Solicitando refuerzo. Esperando confirmación...");
+      const receipt = await tx.wait();
+      const txHash = getTransactionHash(tx, receipt);
+
+      console.log(receipt);
+      setMessage(`Refuerzo solicitado. Hash: ${txHash}`);
+      setRefreshMessage("");
+      await refreshBookingAfterTransaction();
+    } catch (error) {
+      console.error(error);
+      setMessage("Error al solicitar el refuerzo. Revisa rol, monto o estado.");
+    }
+  }
+
+  async function fundAdditionalAmount() {
+    try {
+      if (!contract) {
+        setMessage("Primero conecta tu wallet.");
+        return;
+      }
+
+      const amountToPay = booking?.pendingAdditionalAmount || additionalAmount;
+      const additionalWei = ethers.parseEther(amountToPay);
+      const tx = await contract.fundAdditionalAmount(bookingId, {
+        value: additionalWei,
+      });
+
+      setMessage("Depositando refuerzo. Esperando confirmación...");
+      const receipt = await tx.wait();
+      const txHash = getTransactionHash(tx, receipt);
+
+      console.log(receipt);
+      setMessage(`Refuerzo depositado. Hash: ${txHash}`);
+      setRefreshMessage("");
+      await refreshBookingAfterTransaction();
+    } catch (error) {
+      console.error(error);
+      setMessage(
+        "Error al depositar el refuerzo. El monto debe coincidir exactamente."
+      );
     }
   }
 
@@ -111,10 +238,12 @@ function App() {
 
       setMessage("Iniciando reserva. Esperando confirmación...");
       const receipt = await tx.wait();
+      const txHash = getTransactionHash(tx, receipt);
 
       console.log(receipt);
-      setMessage(`Reserva iniciada. Hash: ${receipt.hash}`);
-      await getBooking();
+      setMessage(`Reserva iniciada. Hash: ${txHash}`);
+      setRefreshMessage("");
+      await refreshBookingAfterTransaction();
     } catch (error) {
       console.error(error);
       setMessage("Error al iniciar la reserva. Solo puede hacerlo el arrendador.");
@@ -127,10 +256,12 @@ function App() {
 
       setMessage("Completando reserva. Esperando confirmación...");
       const receipt = await tx.wait();
+      const txHash = getTransactionHash(tx, receipt);
 
       console.log(receipt);
-      setMessage(`Reserva completada. Hash: ${receipt.hash}`);
-      await getBooking();
+      setMessage(`Reserva completada. Hash: ${txHash}`);
+      setRefreshMessage("");
+      await refreshBookingAfterTransaction();
     } catch (error) {
       console.error(error);
       setMessage("Error al completar la reserva. Revisa estado o permisos.");
@@ -143,14 +274,16 @@ function App() {
 
       setMessage("Cancelando reserva. Esperando confirmación...");
       const receipt = await tx.wait();
+      const txHash = getTransactionHash(tx, receipt);
 
       console.log(receipt);
-      setMessage(`Reserva cancelada. Hash: ${receipt.hash}`);
-      await getBooking();
+      setMessage(`Reserva cancelada. Hash: ${txHash}`);
+      setRefreshMessage("");
+      await refreshBookingAfterTransaction();
     } catch (error) {
       console.error(error);
       setMessage(
-        "Operación rechazada: solo pueden cancelarse reservas en estado Created o Funded."
+        "Operación rechazada: solo pueden cancelarse reservas en estado Created, Funded o AdditionalFundingRequired."
       );
     }
   }
@@ -162,19 +295,9 @@ function App() {
         return;
       }
 
-      const data = await contract.getBooking(bookingId);
-
-      setBooking({
-        landlord: data.landlord,
-        tenant: data.tenant,
-        rentalAmount: ethers.formatEther(data.rentalAmount),
-        depositAmount: ethers.formatEther(data.depositAmount),
-        startDate: new Date(Number(data.startDate) * 1000).toLocaleString(),
-        endDate: new Date(Number(data.endDate) * 1000).toLocaleString(),
-        status: BOOKING_STATUS[Number(data.status)],
-      });
-
+      await loadBooking();
       setMessage("Reserva consultada correctamente.");
+      setRefreshMessage("");
     } catch (error) {
       console.error(error);
       setMessage("No se pudo consultar la reserva.");
@@ -233,12 +356,32 @@ function App() {
           onChange={(e) => setBookingId(e.target.value)}
         />
 
+        <label>Monto de refuerzo en ETH</label>
+        <input
+          value={additionalAmount}
+          onChange={(e) => setAdditionalAmount(e.target.value)}
+        />
+
         <div className="actions">
           <button onClick={getBooking}>Consultar</button>
-          <button onClick={fundBooking}>Depositar fondos</button>
-          <button onClick={startBooking}>Iniciar</button>
-          <button onClick={completeBooking}>Completar</button>
-          <button onClick={cancelBooking}>Cancelar</button>
+          {canFundBooking && (
+            <button onClick={fundBooking}>Depositar fondos</button>
+          )}
+          {canRequestAdditionalFunding && (
+            <button onClick={requestAdditionalFunding}>
+              Solicitar refuerzo
+            </button>
+          )}
+          {canFundAdditionalAmount && (
+            <button onClick={fundAdditionalAmount}>Depositar refuerzo</button>
+          )}
+          {canStartBooking && (
+            <button onClick={startBooking}>Iniciar reserva</button>
+          )}
+          {canCompleteBooking && (
+            <button onClick={completeBooking}>Completar</button>
+          )}
+          {canCancelBooking && <button onClick={cancelBooking}>Cancelar</button>}
         </div>
       </section>
 
@@ -249,6 +392,8 @@ function App() {
           <p><strong>Arrendatario:</strong> {booking.tenant}</p>
           <p><strong>Alquiler:</strong> {booking.rentalAmount} ETH</p>
           <p><strong>Depósito:</strong> {booking.depositAmount} ETH</p>
+          <p><strong>Refuerzo pendiente:</strong> {booking.pendingAdditionalAmount} ETH</p>
+          <p><strong>Refuerzo depositado:</strong> {booking.fundedAdditionalAmount} ETH</p>
           <p><strong>Inicio:</strong> {booking.startDate}</p>
           <p><strong>Fin:</strong> {booking.endDate}</p>
           <p><strong>Estado:</strong> {booking.status}</p>
@@ -258,6 +403,12 @@ function App() {
       {message && (
         <section className="card message">
           <p>{message}</p>
+        </section>
+      )}
+
+      {refreshMessage && (
+        <section className="card message">
+          <p>{refreshMessage}</p>
         </section>
       )}
     </main>
