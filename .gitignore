@@ -1,0 +1,26 @@
+# Dependencias
+node_modules/
+
+# Variables y secretos
+.env
+.env.*
+!.env.example
+
+# Hardhat
+artifacts/
+cache/
+coverage/
+
+# Compilación del frontend
+dist/
+build/
+
+# Sistema y logs
+.DS_Store
+*.log
+
+# Despliegues locales de Hardhat Ignition
+ignition/deployments/
+
+# Tipos generados automáticamente
+types/
