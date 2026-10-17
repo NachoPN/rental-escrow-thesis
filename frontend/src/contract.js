@@ -1,4 +1,4 @@
-export const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+export const CONTRACT_ADDRESS = "0x6A13f62Cdb5B8a20D752002Fd9d715d643fE6350";
 
 export const CONTRACT_ABI = [
   "function createBooking(address tenant, uint256 rentalAmount, uint256 depositAmount, uint256 startDate, uint256 endDate) external returns (uint256)",
